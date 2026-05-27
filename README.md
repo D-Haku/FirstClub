@@ -110,6 +110,245 @@ curl -s -X POST http://localhost:8080/api/v1/checkout/apply-membership \
 curl -s -X POST http://localhost:8080/api/v1/subscriptions/u-mid/cancel | jq
 ```
 
+## Sample responses
+
+Every response below is a real capture from a fresh `mvn spring-boot:run` against the seeded demo profile.
+
+### `GET /api/v1/catalog` (anonymous)
+
+```json
+{
+  "plans": [
+    { "code": "MONTHLY", "durationDays": 30 },
+    { "code": "QUARTERLY", "durationDays": 90 },
+    { "code": "YEARLY", "durationDays": 365 }
+  ],
+  "tiers": [
+    { "code": "SILVER", "rank": 1, "benefits": ["FREE_DELIVERY"] },
+    { "code": "GOLD", "rank": 2, "benefits": ["FREE_DELIVERY", "EXTRA_DISCOUNT"] },
+    { "code": "PLATINUM", "rank": 3, "benefits": ["FREE_DELIVERY", "EXTRA_DISCOUNT", "EXCLUSIVE_DEALS", "PRIORITY_SUPPORT"] }
+  ],
+  "prices": [
+    { "plan": "MONTHLY",   "tier": "SILVER",   "amount": 4.9900,   "currency": "USD" },
+    { "plan": "MONTHLY",   "tier": "GOLD",     "amount": 9.9900,   "currency": "USD" },
+    { "plan": "MONTHLY",   "tier": "PLATINUM", "amount": 14.9900,  "currency": "USD" },
+    { "plan": "QUARTERLY", "tier": "SILVER",   "amount": 12.9900,  "currency": "USD" },
+    { "plan": "QUARTERLY", "tier": "GOLD",     "amount": 26.9900,  "currency": "USD" },
+    { "plan": "QUARTERLY", "tier": "PLATINUM", "amount": 39.9900,  "currency": "USD" },
+    { "plan": "YEARLY",    "tier": "SILVER",   "amount": 49.9900,  "currency": "USD" },
+    { "plan": "YEARLY",    "tier": "GOLD",     "amount": 99.9900,  "currency": "USD" },
+    { "plan": "YEARLY",    "tier": "PLATINUM", "amount": 149.9900, "currency": "USD" }
+  ],
+  "recommendedTier": null
+}
+```
+
+### Tier recommendations per seeded user
+
+```bash
+$ curl -s "http://localhost:8080/api/v1/catalog?userId=u-bronze" | jq '.recommendedTier'
+"SILVER"
+
+$ curl -s "http://localhost:8080/api/v1/catalog?userId=u-mid" | jq '.recommendedTier'
+"GOLD"
+
+$ curl -s "http://localhost:8080/api/v1/catalog?userId=u-vip" | jq '.recommendedTier'
+"PLATINUM"
+```
+
+The criteria see different signals per user (cohort label + trailing order count + monthly spend) and the deterministic aggregator picks one tier.
+
+### Subscribe + idempotent replay + duplicate-active conflict
+
+```bash
+$ curl -s -X POST http://localhost:8080/api/v1/subscriptions \
+    -H 'Content-Type: application/json' \
+    -d '{"userId":"u-mid","plan":"MONTHLY","tier":"GOLD","idempotencyKey":"sub-1"}'
+```
+```json
+{
+  "id": "3e843d66-bc37-4d32-b71e-9a190209bc79",
+  "userId": "u-mid",
+  "plan": "MONTHLY",
+  "tier": "GOLD",
+  "priceCharged": 9.99,
+  "status": "ACTIVE",
+  "startAt": "2026-05-27T19:52:26.227324Z",
+  "endAt":   "2026-06-26T19:52:26.227324Z",
+  "canceledAt": null,
+  "version": 0
+}
+```
+
+Replay with the same `idempotencyKey` returns the same id and version (no second row created):
+
+```bash
+$ curl -s -X POST http://localhost:8080/api/v1/subscriptions \
+    -H 'Content-Type: application/json' \
+    -d '{"userId":"u-mid","plan":"MONTHLY","tier":"GOLD","idempotencyKey":"sub-1"}' \
+    | jq '{id, version}'
+{
+  "id": "3e843d66-bc37-4d32-b71e-9a190209bc79",
+  "version": 0
+}
+```
+
+A second subscribe attempt without a matching key is rejected by the `active_user_id` unique constraint:
+
+```bash
+$ curl -s -o /tmp/r.json -w 'HTTP %{http_code}\n' -X POST http://localhost:8080/api/v1/subscriptions \
+    -H 'Content-Type: application/json' \
+    -d '{"userId":"u-mid","plan":"YEARLY","tier":"PLATINUM"}'
+HTTP 409
+```
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "User u-mid already has an active subscription 3e843d66-bc37-4d32-b71e-9a190209bc79",
+  "instance": "/api/v1/subscriptions"
+}
+```
+
+### Change tier (preserves plan + endAt, bumps `@Version`)
+
+```bash
+$ curl -s -X POST http://localhost:8080/api/v1/subscriptions/u-mid/change-tier \
+    -H 'Content-Type: application/json' \
+    -d '{"targetTier":"PLATINUM"}'
+```
+```json
+{
+  "id": "3e843d66-bc37-4d32-b71e-9a190209bc79",
+  "userId": "u-mid",
+  "plan": "MONTHLY",
+  "tier": "PLATINUM",
+  "priceCharged": 9.99,
+  "status": "ACTIVE",
+  "startAt": "2026-05-27T19:52:26.227324Z",
+  "endAt":   "2026-06-26T19:52:26.227324Z",
+  "canceledAt": null,
+  "version": 1
+}
+```
+
+### Current membership
+
+```bash
+$ curl -s http://localhost:8080/api/v1/subscriptions/u-mid/current | jq
+```
+```json
+{
+  "active": true,
+  "subscription": {
+    "id": "3e843d66-bc37-4d32-b71e-9a190209bc79",
+    "userId": "u-mid",
+    "plan": "MONTHLY",
+    "tier": "PLATINUM",
+    "priceCharged": 9.99,
+    "status": "ACTIVE",
+    "startAt": "2026-05-27T19:52:26.227324Z",
+    "endAt":   "2026-06-26T19:52:26.227324Z",
+    "canceledAt": null,
+    "version": 1
+  },
+  "benefits": ["FREE_DELIVERY", "EXTRA_DISCOUNT", "EXCLUSIVE_DEALS", "PRIORITY_SUPPORT"]
+}
+```
+
+### Apply membership at checkout — PLATINUM member
+
+```bash
+$ curl -s -X POST http://localhost:8080/api/v1/checkout/apply-membership \
+    -H 'Content-Type: application/json' \
+    -d '{
+          "userId":"u-mid",
+          "idempotencyKey":"co-1",
+          "cart": {
+            "items":[{"sku":"S1","qty":2,"unitPrice":12.50}],
+            "subtotal":25.00,
+            "deliveryFee":5.00
+          }
+        }'
+```
+```json
+{
+  "subtotal": 22.5,
+  "deliveryFee": 0.0,
+  "totalAdjustment": -8.125,
+  "prioritySupport": true,
+  "appliedBenefits": [
+    { "id": "FREE_DELIVERY",   "adjustment": -5.0,    "description": "Free delivery waived $5.0000" },
+    { "id": "EXTRA_DISCOUNT",  "adjustment": -2.5,    "description": "Extra discount 10% applied" },
+    { "id": "EXCLUSIVE_DEALS", "adjustment": -0.625,  "description": "Exclusive deals applied to 1 items" },
+    { "id": "PRIORITY_SUPPORT","adjustment":  0.0,    "description": "Priority support enabled" }
+  ],
+  "failures": []
+}
+```
+
+The chain ran `FREE_DELIVERY → EXTRA_DISCOUNT (10%) → EXCLUSIVE_DEALS → PRIORITY_SUPPORT` in `executionOrder`, each adjustment recorded on the response, `subtotal` and `deliveryFee` mutated by the strategies, and `totalAdjustment` aggregated.
+
+### Apply membership at checkout — non-member passthrough
+
+```bash
+$ curl -s -X POST http://localhost:8080/api/v1/checkout/apply-membership \
+    -H 'Content-Type: application/json' \
+    -d '{
+          "userId":"u-bronze",
+          "cart": {
+            "items":[{"sku":"S1","qty":1,"unitPrice":12.50}],
+            "subtotal":12.50,
+            "deliveryFee":5.00
+          }
+        }'
+```
+```json
+{
+  "subtotal": 12.5,
+  "deliveryFee": 5.0,
+  "totalAdjustment": 0,
+  "prioritySupport": false,
+  "appliedBenefits": [],
+  "failures": []
+}
+```
+
+### Cancel + post-cancel current
+
+```bash
+$ curl -s -X POST http://localhost:8080/api/v1/subscriptions/u-mid/cancel | jq '{tier, status, canceledAt}'
+{
+  "tier": "PLATINUM",
+  "status": "CANCELED",
+  "canceledAt": "2026-05-27T19:52:31.408Z"
+}
+
+$ curl -s http://localhost:8080/api/v1/subscriptions/u-mid/current | jq
+{
+  "active": false,
+  "subscription": null,
+  "benefits": null
+}
+```
+
+### Concurrency invariant — at most one ACTIVE subscription per user
+
+Five simultaneous subscribes for `u-bronze` with no idempotency key. Exactly one wins:
+
+```bash
+$ for i in 1 2 3 4 5; do
+    curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8080/api/v1/subscriptions \
+      -H 'Content-Type: application/json' \
+      -d '{"userId":"u-bronze","plan":"MONTHLY","tier":"SILVER"}' &
+  done; wait | sort | uniq -c
+   1 201
+   4 409
+```
+
+The `active_user_id` generated column + unique index on `subscription` enforces the invariant at the database level; race losers surface as `DataIntegrityViolationException` and are mapped to HTTP 409 by `GlobalExceptionHandler`.
+
 ## Configuration
 
 `application.yml`:
