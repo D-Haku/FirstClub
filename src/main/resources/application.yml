@@ -1,0 +1,66 @@
+# FirstClub Membership Program - Spring Boot configuration.
+#
+# This profile-driven configuration backs the runnable demo described in
+# requirements 10.1 and 10.2: build and run with standard Maven commands
+# against Spring Boot 3 + Spring Web + Spring Data JPA, with an embedded
+# H2 database for persistence.
+#
+# Schema is created from src/main/resources/schema.sql at startup
+# (defer-datasource-initialization=true ensures it runs after JPA bootstrap
+# but before any seeders), and Hibernate's automatic DDL is disabled so
+# the SQL script is the single source of truth (see schema.sql for the
+# partial unique index supporting at-most-one-ACTIVE-subscription).
+
+spring:
+  profiles:
+    active: demo
+
+  datasource:
+    url: jdbc:h2:mem:membership;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+  sql:
+    init:
+      mode: always
+      platform: h2
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    defer-datasource-initialization: true
+    open-in-view: false
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+
+  h2:
+    console:
+      enabled: true
+      path: /h2
+
+server:
+  port: 8080
+
+# Membership-specific tuning knobs.
+#
+# - recommendation.ttl: freshness window for the in-memory tier
+#   recommendation cache (Requirements 6.4, 6.5). ISO-8601 duration.
+# - retry.maxAttempts: maximum @Retryable attempts for tier-change and
+#   cancel flows that race on Subscription.@Version (Requirements 3.5,
+#   9.1, 9.2).
+membership:
+  recommendation:
+    ttl: PT5M
+  retry:
+    maxAttempts: 3
+
+logging:
+  level:
+    root: INFO
+    com.afirstclub.membership: INFO
+    org.hibernate.SQL: WARN

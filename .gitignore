@@ -1,0 +1,25 @@
+# Build output
+target/
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+/tmp/
+
+# H2 file mode (if anyone switches off in-memory)
+*.mv.db
+*.trace.db
